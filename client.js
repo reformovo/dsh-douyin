@@ -263,6 +263,8 @@ window.__ModuleLoader__.load({
     const CSS = `
 .dy-root{position:relative;display:flex;flex-direction:column;height:100%;min-height:0;background:#000;color:#fff;overflow:hidden;font-size:13px;}
 .dy-stage{position:relative;flex:1;min-height:0;background:#000;overflow:hidden;touch-action:pan-x;}
+.dy-track{position:absolute;inset:0;overflow:hidden;}
+.dy-slide{position:absolute;inset:0;background:#000;transform:translateY(0);transition:transform .34s cubic-bezier(.22,.61,.36,1);will-change:transform;}
 .dy-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;}
 .dy-shade{position:absolute;inset:0;pointer-events:none;background:linear-gradient(to top,rgba(0,0,0,.78) 0,rgba(0,0,0,.25) 26%,rgba(0,0,0,0) 48%),linear-gradient(to bottom,rgba(0,0,0,.5) 0,rgba(0,0,0,0) 18%);}
 .dy-head{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;gap:8px;padding:10px 12px;z-index:3;}
@@ -356,7 +358,7 @@ window.__ModuleLoader__.load({
       const [progress, setProgress] = React.useState(0)
       const [playing, setPlaying] = React.useState(false)
       const [notice, setNotice] = React.useState(null)
-      const [broken, setBroken] = React.useState(null)
+      const [brokenIds, setBrokenIds] = React.useState(() => new Set())
       const [account, setAccount] = React.useState({ bound: false, profile: null })
       const [sheet, setSheet] = React.useState(false)
       const [cookieText, setCookieText] = React.useState('')
@@ -468,20 +470,25 @@ window.__ModuleLoader__.load({
         wasRunning.current = running
       }, [running, pauseForFinish])
 
-      // Re-point the one <video> at the item on stage.
-      React.useEffect(() => {
-        const video = videoRef.current
-        if (!video || !item?.play) return
-        video.src = item.play
-        video.load()
-        video.play().catch(() => {})
-        setProgress(0)
-        setBroken(null)
-      }, [item?.id, item?.play])
+      // The slide on stage owns playback; its neighbours are already buffered and
+      // wait paused, so a switch is only a transform, never a fresh load.
+      const findActiveVideo = React.useCallback(
+        () => stageRef.current?.querySelector('.dy-slide[data-active="true"] video') ?? null,
+        [],
+      )
 
       React.useEffect(() => {
-        const video = videoRef.current
-        if (video) video.muted = muted
+        const video = findActiveVideo()
+        videoRef.current = video
+        for (const element of stageRef.current?.querySelectorAll('video') ?? []) {
+          if (element !== video) element.pause()
+        }
+        if (video) video.play().catch(() => {})
+        setProgress(0)
+      }, [item?.id, findActiveVideo])
+
+      React.useEffect(() => {
+        for (const element of stageRef.current?.querySelectorAll('video') ?? []) element.muted = muted
         try {
           localStorage.setItem(MUTED_KEY, muted ? '1' : '0')
         } catch {
@@ -574,9 +581,9 @@ window.__ModuleLoader__.load({
         togglePlay()
       }
 
-      const onTimeUpdate = () => {
-        const video = videoRef.current
-        if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
+      const onTimeUpdate = (event) => {
+        const video = event.currentTarget
+        if (video !== videoRef.current || !Number.isFinite(video.duration) || video.duration <= 0) return
         setProgress(Math.min(1, video.currentTime / video.duration))
       }
 
@@ -593,6 +600,7 @@ window.__ModuleLoader__.load({
         setExhausted(false)
         setError(null)
         setNotice(null)
+        setBrokenIds(new Set())
         load()
       }, [load])
 
@@ -736,55 +744,78 @@ window.__ModuleLoader__.load({
           }
           return h('div', { className: 'dy-center' }, h('span', { className: 'dy-spin' }), h('div', null, t('feed.loadingMore')))
         }
+        // Three slides: the one leaving, the one on stage, the one waiting. Only
+        // a transform changes on a switch, and the next video is buffered before
+        // it is ever seen.
+        const trackStart = Math.max(0, index - 1)
+        const slides = items.slice(trackStart, Math.min(items.length, index + 2))
         return h(
-          React.Fragment,
-          null,
-          h('video', {
-            ref: videoRef,
-            className: 'dy-video',
-            poster: item.cover ?? undefined,
-            playsInline: true,
-            loop: true,
-            muted,
-            preload: 'auto',
-            'aria-label': item.desc || item.author?.name || 'Douyin video',
-            onTimeUpdate,
-            onPlay: () => {
-              setPlaying(true)
-              setNotice((current) => (current === 'finished' ? null : current))
-            },
-            onPause: () => setPlaying(false),
-            onError: () => setBroken(item.id),
-          }),
-          h('div', { className: 'dy-shade' }),
-          h(
-            'div',
-            { className: 'dy-meta' },
-            h(
+          'div',
+          { className: 'dy-track' },
+          slides.map((entry, position) => {
+            const offset = trackStart + position - index
+            const active = offset === 0
+            return h(
               'div',
-              { className: 'dy-author' },
-              item.author?.avatar
-                ? h('img', { className: 'dy-avatar', src: item.author.avatar, alt: '', loading: 'lazy' })
-                : h('span', { className: 'dy-avatar', style: { display: 'block' } }),
-              h('span', null, item.author?.name || t('tab.title')),
-            ),
-            item.desc ? h('div', { className: 'dy-desc' }, item.desc) : null,
-            h(
-              'div',
-              { className: 'dy-stats' },
-              h('span', null, t('feed.likes').replace('{count}', formatCount(item.stats?.digg))),
-              h('span', null, t('feed.comments').replace('{count}', formatCount(item.stats?.comment))),
-              h('span', null, t('feed.share').replace('{count}', formatCount(item.stats?.share))),
-            ),
-          ),
-          broken === item.id
-            ? h(
-              'div',
-              { className: 'dy-center' },
-              h('div', null, t('feed.unavailable')),
-              h('button', { className: 'dy-ghost', type: 'button', onClick: () => go(1) }, t('feed.next')),
+              {
+                key: entry.id,
+                className: 'dy-slide',
+                'data-active': active ? 'true' : 'false',
+                style: { transform: `translateY(${offset * 100}%)` },
+                'aria-hidden': active ? undefined : 'true',
+              },
+              h('video', {
+                className: 'dy-video',
+                src: entry.play,
+                poster: entry.cover ?? undefined,
+                playsInline: true,
+                loop: true,
+                muted,
+                preload: offset < 0 ? 'none' : 'auto',
+                'aria-label': entry.desc || entry.author?.name || 'Douyin video',
+                onTimeUpdate,
+                onPlay: (event) => {
+                  if (event.currentTarget !== videoRef.current) return
+                  setPlaying(true)
+                  setNotice((current) => (current === 'finished' ? null : current))
+                },
+                onPause: (event) => {
+                  if (event.currentTarget !== videoRef.current) return
+                  setPlaying(false)
+                },
+                onError: () => setBrokenIds((previous) => new Set(previous).add(entry.id)),
+              }),
+              h('div', { className: 'dy-shade' }),
+              h(
+                'div',
+                { className: 'dy-meta' },
+                h(
+                  'div',
+                  { className: 'dy-author' },
+                  entry.author?.avatar
+                    ? h('img', { className: 'dy-avatar', src: entry.author.avatar, alt: '', loading: 'lazy' })
+                    : h('span', { className: 'dy-avatar', style: { display: 'block' } }),
+                  h('span', null, entry.author?.name || t('tab.title')),
+                ),
+                entry.desc ? h('div', { className: 'dy-desc' }, entry.desc) : null,
+                h(
+                  'div',
+                  { className: 'dy-stats' },
+                  h('span', null, t('feed.likes').replace('{count}', formatCount(entry.stats?.digg))),
+                  h('span', null, t('feed.comments').replace('{count}', formatCount(entry.stats?.comment))),
+                  h('span', null, t('feed.share').replace('{count}', formatCount(entry.stats?.share))),
+                ),
+              ),
+              brokenIds.has(entry.id) && active
+                ? h(
+                  'div',
+                  { className: 'dy-center' },
+                  h('div', null, t('feed.unavailable')),
+                  h('button', { className: 'dy-ghost', type: 'button', onClick: () => go(1) }, t('feed.next')),
+                )
+                : null,
             )
-            : null,
+          }),
         )
       })()
 
@@ -920,7 +951,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dy-stage', ref: stageRef, onTouchStart, onTouchEnd, onClick: onStageClick },
           body,
-          item && !playing && broken !== item.id
+          item && !playing && !brokenIds.has(item.id)
             ? h('div', { className: 'dy-bigplay' }, h('span', null, h(Transport, { size: 26 })))
             : null,
           h(
