@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Douyin Break">
+  <defs>
+    <linearGradient id="dy-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1d1f29"/>
+      <stop offset="1" stop-color="#08090d"/>
+    </linearGradient>
+    <linearGradient id="dy-ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#37e6d0"/>
+      <stop offset="1" stop-color="#7a5cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="15" fill="url(#dy-bg)"/>
+  <circle cx="32" cy="32" r="17" fill="none" stroke="url(#dy-ring)" stroke-width="2" opacity="0.65"/>
+  <path d="M26.5 22.4v19.2L43 32 26.5 22.4Z" fill="#ffffff"/>
+  <path d="M30.5 38.6v-9.4" stroke="#08090d" stroke-width="1.6" stroke-linecap="round" opacity="0.35"/>
+</svg>

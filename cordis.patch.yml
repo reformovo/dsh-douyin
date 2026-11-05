@@ -1,0 +1,6 @@
+- insert:
+    - id: douyin
+      name: dsh-douyin
+      config:
+        autoPrompt: true
+        feedCount: 8

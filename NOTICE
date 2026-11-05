@@ -1,0 +1,9 @@
+dsh-douyin
+Copyright 2026 the dsh-douyin authors
+
+This product includes software derived from dtk
+(https://github.com/Evil0ctal/Douyin_TikTok_Download_API),
+licensed under the Apache License, Version 2.0.
+
+The a_bogus signing port in lib/abogus.js and lib/sm3.js follows that
+project's clean-room implementation of Douyin's own bdms.js signature.
