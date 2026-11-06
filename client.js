@@ -590,7 +590,7 @@ window.__ModuleLoader__.load({
       }
 
       const barRef = React.useRef(null)
-      const scrubRef = React.useRef({ dragging: false, resume: false })
+      const scrubRef = React.useRef({ dragging: false, resume: false, target: null })
 
       // The bar drives seeking with native pointer events on `window`: a drag
       // that leaves the 16px bar keeps tracking, and no synthetic handler can
@@ -612,8 +612,11 @@ window.__ModuleLoader__.load({
             ? video.duration
             : (video.seekable.length ? video.seekable.end(video.seekable.length - 1) : 0)
           if (!duration) return
-          video.currentTime = ratio * duration
-          setProgress(ratio)
+          // Never land exactly on the end: with `loop` that wraps straight to 0.
+          const target = Math.min(ratio * duration, Math.max(0, duration - 0.25))
+          video.currentTime = target
+          scrubRef.current.target = target
+          setProgress(target / duration)
         }
         const onMove = (event) => {
           if (!scrubRef.current.dragging) return
@@ -628,7 +631,29 @@ window.__ModuleLoader__.load({
           window.removeEventListener('pointerup', onUp)
           window.removeEventListener('pointercancel', onUp)
           const video = currentVideo()
-          if (video && scrubRef.current.resume) video.play().catch(() => {})
+          if (!video) return
+          const target = scrubRef.current.target
+          const resume = scrubRef.current.resume
+          let settled = false
+          const finish = () => {
+            if (settled) return
+            settled = true
+            // A pending seek can be dropped by a play() that arrives mid-flight,
+            // so re-assert the position once before resuming.
+            if (Number.isFinite(target) && Math.abs(video.currentTime - target) > 0.4) {
+              video.currentTime = target
+            }
+            if (resume) video.play().catch(() => {})
+          }
+          if (video.seeking) {
+            video.addEventListener('seeked', finish, { once: true })
+            setTimeout(() => {
+              video.removeEventListener('seeked', finish)
+              finish()
+            }, 500)
+          } else {
+            finish()
+          }
         }
         const onDown = (event) => {
           if (event.button !== 0) return
@@ -636,6 +661,7 @@ window.__ModuleLoader__.load({
           event.stopPropagation()
           const video = currentVideo()
           scrubRef.current.dragging = true
+          scrubRef.current.target = null
           scrubRef.current.resume = Boolean(video && !video.paused)
           if (video) video.pause()
           setScrubbing(true)
@@ -660,6 +686,17 @@ window.__ModuleLoader__.load({
         const video = event.currentTarget
         if (scrubRef.current.dragging) return
         if (video !== videoRef.current || !Number.isFinite(video.duration) || video.duration <= 0) return
+        const target = scrubRef.current.target
+        if (Number.isFinite(target)) {
+          if (Math.abs(video.currentTime - target) > 1.5 && target > 1) {
+            // The seek was ignored or undone (an aborted range request does this);
+            // ask once more, then accept whatever the engine decides.
+            video.currentTime = target
+            scrubRef.current.target = null
+            return
+          }
+          scrubRef.current.target = null
+        }
         setProgress(Math.min(1, video.currentTime / video.duration))
       }
 
