@@ -36,6 +36,7 @@ window.__ModuleLoader__.load({
       'feed.mute': '静音',
       'feed.unmute': '取消静音',
       'feed.refresh': '换一批',
+      'feed.seek': '拖动进度',
       'feed.play': '播放',
       'feed.pause': '暂停',
       'feed.next': '下一条',
@@ -89,6 +90,7 @@ window.__ModuleLoader__.load({
       'feed.mute': 'Mute',
       'feed.unmute': 'Unmute',
       'feed.refresh': 'New batch',
+      'feed.seek': 'Seek',
       'feed.play': 'Play',
       'feed.pause': 'Pause',
       'feed.next': 'Next',
@@ -294,9 +296,14 @@ window.__ModuleLoader__.load({
 .dy-avatar{width:26px;height:26px;border-radius:999px;object-fit:cover;border:1px solid rgba(255,255,255,.5);background:#222;}
 .dy-desc{font-size:13px;line-height:1.45;max-height:5.8em;overflow:hidden;white-space:pre-wrap;word-break:break-word;opacity:.95;}
 .dy-stats{display:flex;gap:12px;font-size:12px;opacity:.82;}
-.dy-progress{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.18);z-index:4;}
-.dy-progress > i{display:block;height:100%;width:0;background:#fff;transition:width .18s linear;}
-.dy-time{position:absolute;right:10px;bottom:8px;font-size:11px;color:rgba(255,255,255,.75);z-index:4;font-variant-numeric:tabular-nums;}
+.dy-progress{position:absolute;left:0;right:0;bottom:0;height:16px;z-index:5;cursor:pointer;touch-action:none;}
+.dy-progress::before{content:'';position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.22);transition:height .12s;}
+.dy-progress > i{position:absolute;left:0;bottom:0;height:3px;width:0;background:#fff;transition:height .12s;}
+.dy-progress > b{position:absolute;bottom:-2px;width:9px;height:9px;margin-left:-4.5px;border-radius:999px;background:#fff;opacity:0;transition:opacity .12s;pointer-events:none;}
+.dy-progress:hover::before,.dy-progress.scrubbing::before{height:5px;}
+.dy-progress:hover > i,.dy-progress.scrubbing > i{height:5px;}
+.dy-progress:hover > b,.dy-progress.scrubbing > b{opacity:1;}
+.dy-time{position:absolute;right:10px;bottom:18px;font-size:11px;color:rgba(255,255,255,.75);z-index:4;font-variant-numeric:tabular-nums;}
 .dy-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;z-index:5;color:rgba(255,255,255,.86);font-size:13px;line-height:1.5;}
 .dy-center .dy-spin{width:22px;height:22px;border-radius:999px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:dy-spin .8s linear infinite;}
 @keyframes dy-spin{to{transform:rotate(360deg)}}
@@ -357,6 +364,7 @@ window.__ModuleLoader__.load({
       })
       const [progress, setProgress] = React.useState(0)
       const [playing, setPlaying] = React.useState(false)
+      const [scrubbing, setScrubbing] = React.useState(false)
       const [notice, setNotice] = React.useState(null)
       const [brokenIds, setBrokenIds] = React.useState(() => new Set())
       const [account, setAccount] = React.useState({ bound: false, profile: null })
@@ -579,6 +587,48 @@ window.__ModuleLoader__.load({
           return
         }
         togglePlay()
+      }
+
+      const barRef = React.useRef(null)
+
+      /** Seek to the pointer's position on the bar; used for click and drag alike. */
+      const seekTo = (event) => {
+        const bar = barRef.current
+        const video = videoRef.current
+        if (!bar || !video || !Number.isFinite(video.duration) || video.duration <= 0) return
+        const rect = bar.getBoundingClientRect()
+        if (!rect.width) return
+        const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
+        video.currentTime = ratio * video.duration
+        setProgress(ratio)
+      }
+
+      const onSeekDown = (event) => {
+        event.stopPropagation()
+        event.preventDefault()
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId)
+        } catch {
+          // Capture is a nicety, not a requirement.
+        }
+        setScrubbing(true)
+        seekTo(event)
+      }
+
+      const onSeekMove = (event) => {
+        if (!scrubbing) return
+        event.stopPropagation()
+        seekTo(event)
+      }
+
+      const onSeekEnd = (event) => {
+        if (!scrubbing) return
+        try {
+          event.currentTarget.releasePointerCapture(event.pointerId)
+        } catch {
+          // Already released.
+        }
+        setScrubbing(false)
       }
 
       const onTimeUpdate = (event) => {
@@ -984,7 +1034,27 @@ window.__ModuleLoader__.load({
               onClick: () => go(1),
             }, h(Chevron, {})),
           ),
-          item ? h('div', { className: 'dy-progress' }, h('i', { style: { width: `${Math.round(progress * 100)}%` } })) : null,
+          item
+            ? h(
+              'div',
+              {
+                ref: barRef,
+                className: scrubbing ? 'dy-progress scrubbing' : 'dy-progress',
+                role: 'slider',
+                'aria-label': t('feed.seek'),
+                'aria-valuemin': 0,
+                'aria-valuemax': 100,
+                'aria-valuenow': Math.round(progress * 100),
+                onPointerDown: onSeekDown,
+                onPointerMove: onSeekMove,
+                onPointerUp: onSeekEnd,
+                onPointerCancel: onSeekEnd,
+                onClick: (event) => event.stopPropagation(),
+              },
+              h('i', { style: { width: `${progress * 100}%` } }),
+              h('b', { style: { left: `${progress * 100}%` } }),
+            )
+            : null,
           item ? h('div', { className: 'dy-time' }, formatTime(item.duration * progress), ' / ', formatTime(item.duration)) : null,
           notice === 'finished'
             ? h(
