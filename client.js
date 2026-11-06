@@ -622,6 +622,21 @@ window.__ModuleLoader__.load({
         }))
       }, [])
 
+      const probeHttp = React.useCallback((src) => {
+        if (!src) return
+        fetch(src, { headers: { Range: 'bytes=0-1' }, cache: 'no-store' })
+          .then((response) => response.arrayBuffer().then(() => response))
+          .then((response) => {
+            setProbe((current) => (current ? {
+              ...current,
+              http: `${response.status} ar=${response.headers.get('accept-ranges')} cl=${response.headers.get('content-length')} cr=${response.headers.get('content-range')} ct=${response.headers.get('content-type')}`,
+            } : current))
+          })
+          .catch((error) => {
+            setProbe((current) => (current ? { ...current, http: `err ${error?.message ?? error}` } : current))
+          })
+      }, [])
+
       const sampleWire = React.useCallback(() => {
         fetch(`${API}/_wire`)
           .then((response) => response.json())
@@ -688,6 +703,7 @@ window.__ModuleLoader__.load({
           startProbe()
           const video = currentVideo()
           if (video) {
+            probeHttp(video.currentSrc)
             const trail = []
             const names = ['loadstart', 'emptied', 'pause', 'seeking', 'seeked', 'play', 'loadedmetadata']
             const record = (event) => {
