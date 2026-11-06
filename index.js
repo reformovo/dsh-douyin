@@ -82,6 +82,8 @@ export function apply(ctx, config = {}) {
 
   /** Every aweme id already handed to the page, so one stream never repeats. */
   const seen = new Set()
+  /** TEMPORARY: the last media requests as the browser made them. */
+  const wire = []
   /** cover url -> { type, bytes } */
   const covers = new Map()
 
@@ -158,6 +160,14 @@ export function apply(ctx, config = {}) {
       ...(request.headers.range ? { Range: request.headers.range } : {}),
     }
     const upstream = await fetch(target, { headers })
+    wire.push({
+      at: Date.now(),
+      range: request.headers.range ?? '-',
+      status: upstream.status,
+      contentRange: upstream.headers.get('content-range') ?? '-',
+      length: upstream.headers.get('content-length') ?? '-',
+    })
+    if (wire.length > 8) wire.shift()
     if (!upstream.ok && upstream.status !== 206) {
       logger.warn?.(`[douyin] media upstream ${upstream.status} range=${request.headers.range ?? '-'} host=${new URL(target).host}`)
       response.statusCode = upstream.status === 403 ? 410 : 502
@@ -357,6 +367,9 @@ export function apply(ctx, config = {}) {
       const cursor = Math.max(1, Number(url.searchParams.get('cursor') ?? '1') || 1)
       const page = await readFeed(cursor)
       return sendJson(response, 200, { ok: true, bound: session.bound, ...page })
+    }
+    if (path === '/_wire') {
+      return sendJson(response, 200, { ok: true, wire })
     }
     if (path === '/_page') {
       // TEMPORARY: same-origin harness page for the media probe.

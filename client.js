@@ -617,8 +617,19 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
+      const sampleWire = React.useCallback(() => {
+        fetch(`${API}/_wire`)
+          .then((response) => response.json())
+          .then((body) => {
+            const last = body?.wire?.[body.wire.length - 1]
+            if (last) setProbe((current) => (current ? { ...current, wire: last } : current))
+          })
+          .catch(() => {})
+      }, [])
+
       const startProbe = React.useCallback(() => {
         sampleProbe()
+        sampleWire()
         clearInterval(probeTimerRef.current)
         probeTimerRef.current = setInterval(sampleProbe, 300)
         setTimeout(() => {
@@ -671,6 +682,18 @@ window.__ModuleLoader__.load({
           window.removeEventListener('pointercancel', onUp)
           startProbe()
           const video = currentVideo()
+          if (video) {
+            const trail = []
+            const names = ['loadstart', 'emptied', 'pause', 'seeking', 'seeked', 'play', 'loadedmetadata']
+            const record = (event) => {
+              trail.push(event.type)
+              setProbe((current) => (current ? { ...current, events: trail.slice(-6).join(',') } : current))
+            }
+            for (const name of names) video.addEventListener(name, record)
+            setTimeout(() => {
+              for (const name of names) video.removeEventListener(name, record)
+            }, 4000)
+          }
           if (!video) return
           const target = scrubRef.current.target
           const resume = scrubRef.current.resume
@@ -1163,7 +1186,13 @@ window.__ModuleLoader__.load({
               h('div', null,
                 `p=${probe.paused ? 1 : 0} sk=${probe.seeking ? 1 : 0} rs=${probe.ready} ns=${probe.network} `,
                 `sw=${probe.serviceWorker} v=${probe.videos} a=${probe.active}`),
-              h('div', null, `src=…${probe.src}`))
+              h('div', null, `ev: ${probe.events ?? '-'}`),
+              h('div', null, `src=…${probe.src}`),
+              probe.wire
+                ? h('div', null,
+                  `wire: ${probe.wire.status} range=${probe.wire.range} `,
+                  `cr=${probe.wire.contentRange} cl=${probe.wire.length}`)
+                : h('div', null, 'wire: -'))
             : null,
           item ? h('div', { className: 'dy-time' }, formatTime(item.duration * progress), ' / ', formatTime(item.duration)) : null,
           notice === 'finished'
