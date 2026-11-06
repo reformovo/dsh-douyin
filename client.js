@@ -321,6 +321,7 @@ window.__ModuleLoader__.load({
 .dy-sheet-actions button[disabled]{opacity:.5;cursor:default;}
 .dy-sheet-actions button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}
 .dy-error-text{color:#ff6b6b;font-size:12px;line-height:1.45;}
+.dy-probe{position:absolute;left:8px;top:42px;z-index:9;max-width:calc(100% - 16px);padding:4px 6px;border-radius:6px;background:rgba(0,0,0,.72);color:#8ef;font:10px/1.4 ui-monospace,Menlo,monospace;pointer-events:none;word-break:break-all;}
 .dy-login-wait{display:flex;align-items:center;gap:10px;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary);}
 .dy-login-wait .dy-spin{width:16px;height:16px;border-radius:999px;border:2px solid var(--dsw-alias-border-l1);border-top-color:var(--dsw-alias-label-primary);animation:dy-spin .8s linear infinite;flex:none;}
 .dy-who{display:flex;align-items:center;gap:8px;font-size:13px;}
@@ -365,6 +366,8 @@ window.__ModuleLoader__.load({
       const [progress, setProgress] = React.useState(0)
       const [playing, setPlaying] = React.useState(false)
       const [scrubbing, setScrubbing] = React.useState(false)
+      const [probe, setProbe] = React.useState(null)
+      const probeTimerRef = React.useRef(null)
       const [notice, setNotice] = React.useState(null)
       const [brokenIds, setBrokenIds] = React.useState(() => new Set())
       const [account, setAccount] = React.useState({ bound: false, profile: null })
@@ -589,6 +592,36 @@ window.__ModuleLoader__.load({
         togglePlay()
       }
 
+      /** TEMPORARY: sample the media element so the drag failure can be seen on screen. */
+      const sampleProbe = React.useCallback(() => {
+        const stage = stageRef.current
+        const video = stage?.querySelector('.dy-slide[data-active="true"] video') ?? null
+        setProbe({
+          target: scrubRef.current.target,
+          ct: video ? video.currentTime : -1,
+          dur: video ? video.duration : -1,
+          ranges: video && video.seekable.length
+            ? `${video.seekable.start(0).toFixed(1)}-${video.seekable.end(video.seekable.length - 1).toFixed(1)}`
+            : 'none',
+          paused: video ? video.paused : null,
+          seeking: video ? video.seeking : null,
+          ready: video ? video.readyState : null,
+          videos: stage ? stage.querySelectorAll('video').length : 0,
+          active: stage ? stage.querySelectorAll('.dy-slide[data-active="true"]').length : 0,
+        })
+      }, [])
+
+      const startProbe = React.useCallback(() => {
+        sampleProbe()
+        clearInterval(probeTimerRef.current)
+        probeTimerRef.current = setInterval(sampleProbe, 300)
+        setTimeout(() => {
+          clearInterval(probeTimerRef.current)
+          probeTimerRef.current = null
+          sampleProbe()
+        }, 8000)
+      }, [sampleProbe])
+
       const barRef = React.useRef(null)
       const scrubRef = React.useRef({ dragging: false, resume: false, target: null })
 
@@ -630,6 +663,7 @@ window.__ModuleLoader__.load({
           window.removeEventListener('pointermove', onMove)
           window.removeEventListener('pointerup', onUp)
           window.removeEventListener('pointercancel', onUp)
+          startProbe()
           const video = currentVideo()
           if (!video) return
           const target = scrubRef.current.target
@@ -1113,6 +1147,13 @@ window.__ModuleLoader__.load({
               h('i', { style: { width: `${progress * 100}%` } }),
               h('b', { style: { left: `${progress * 100}%` } }),
             )
+            : null,
+          probe
+            ? h('div', { className: 'dy-probe' },
+              `t=${probe.ct.toFixed(2)}/${Number.isFinite(probe.dur) ? probe.dur.toFixed(2) : probe.dur} `,
+              `tgt=${probe.target === null ? '-' : Number(probe.target).toFixed(2)} `,
+              `seek=${probe.ranges} p=${probe.paused ? 1 : 0} sk=${probe.seeking ? 1 : 0} `,
+              `rs=${probe.ready} v=${probe.videos} a=${probe.active}`)
             : null,
           item ? h('div', { className: 'dy-time' }, formatTime(item.duration * progress), ' / ', formatTime(item.duration)) : null,
           notice === 'finished'
