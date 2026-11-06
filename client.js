@@ -338,6 +338,8 @@ window.__ModuleLoader__.load({
 .dy-prompt-dismiss{appearance:none;border:0;background:none;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:14px;line-height:1;padding:2px 4px;border-radius:4px;}
 .dy-prompt-dismiss:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);}
 .dy-prompt-dismiss:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}
+.dy-restart{position:absolute;inset:0;z-index:4;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);}
+.dy-restart .dy-spin{width:22px;height:22px;border-radius:999px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:dy-spin .8s linear infinite;}
 .dy-bigplay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;z-index:3;pointer-events:none;}
 .dy-bigplay span{width:62px;height:62px;border-radius:999px;background:rgba(0,0,0,.42);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;color:#fff;}
 .dy-meta{pointer-events:none;}
@@ -365,6 +367,7 @@ window.__ModuleLoader__.load({
       const [progress, setProgress] = React.useState(0)
       const [playing, setPlaying] = React.useState(false)
       const [scrubbing, setScrubbing] = React.useState(false)
+      const [restarting, setRestarting] = React.useState(false)
       const [notice, setNotice] = React.useState(null)
       const [brokenIds, setBrokenIds] = React.useState(() => new Set())
       const [account, setAccount] = React.useState({ bound: false, profile: null })
@@ -489,7 +492,10 @@ window.__ModuleLoader__.load({
         const video = findActiveVideo()
         videoRef.current = video
         offsetRef.current = 0
-        durationRef.current = item?.duration ?? 0
+        // The feed reports milliseconds; every seek calculation below is in seconds.
+        durationRef.current = (item?.duration ?? 0) / 1000
+        if (video && item?.cover && video.getAttribute('poster') !== item.cover) video.setAttribute('poster', item.cover)
+        setRestarting(false)
         const clean = video?.dataset.src
         if (video && clean && video.getAttribute('src') && video.getAttribute('src') !== clean) {
           video.src = clean
@@ -651,6 +657,8 @@ window.__ModuleLoader__.load({
             if (!clean || !Number.isFinite(target)) return false
             offsetRef.current = target
             setProgress(target / (durationRef.current || target || 1))
+            setRestarting(true)
+            if (video.poster) video.removeAttribute('poster')
             video.src = `${clean}${clean.includes('?') ? '&' : '?'}ss=${target.toFixed(2)}`
             video.load()
             if (resume) video.play().catch(() => {})
@@ -923,8 +931,12 @@ window.__ModuleLoader__.load({
                 onTimeUpdate,
                 onPlay: (event) => {
                   if (event.currentTarget !== videoRef.current) return
+                  setRestarting(false)
                   setPlaying(true)
                   setNotice((current) => (current === 'finished' ? null : current))
+                },
+                onCanPlay: (event) => {
+                  if (event.currentTarget === videoRef.current) setRestarting(false)
                 },
                 onPause: (event) => {
                   if (scrubRef.current.dragging) return
@@ -1099,6 +1111,7 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dy-stage', ref: stageRef, onTouchStart, onTouchEnd, onClick: onStageClick },
           body,
+          restarting ? h('div', { className: 'dy-restart' }, h('span', { className: 'dy-spin' })) : null,
           item && !playing && !brokenIds.has(item.id)
             ? h('div', { className: 'dy-bigplay' }, h('span', null, h(Transport, { size: 26 })))
             : null,
