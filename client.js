@@ -596,7 +596,8 @@ window.__ModuleLoader__.load({
       const sampleProbe = React.useCallback(() => {
         const stage = stageRef.current
         const video = stage?.querySelector('.dy-slide[data-active="true"] video') ?? null
-        setProbe({
+        setProbe((previous) => ({
+          ...(previous ?? {}),
           target: scrubRef.current.target,
           ct: video ? video.currentTime : -1,
           dur: video ? video.duration : -1,
@@ -614,7 +615,10 @@ window.__ModuleLoader__.load({
           serviceWorker: navigator.serviceWorker?.controller ? 'yes' : 'no',
           videos: stage ? stage.querySelectorAll('video').length : 0,
           active: stage ? stage.querySelectorAll('.dy-slide[data-active="true"]').length : 0,
-        })
+          uids: stage
+            ? [...stage.querySelectorAll('video')].map((element) => `${element.dataset.uid ?? '?'}${element.closest('.dy-slide')?.getAttribute('data-active') === 'true' ? '*' : ''}`).join(',')
+            : '-',
+        }))
       }, [])
 
       const sampleWire = React.useCallback(() => {
@@ -941,6 +945,9 @@ window.__ModuleLoader__.load({
                 'aria-hidden': active ? undefined : 'true',
               },
               h('video', {
+                ref: (element) => {
+                  if (element && !element.dataset.uid) element.dataset.uid = Math.random().toString(36).slice(2, 6)
+                },
                 className: 'dy-video',
                 src: entry.play,
                 poster: entry.cover ?? undefined,
@@ -1186,7 +1193,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 `p=${probe.paused ? 1 : 0} sk=${probe.seeking ? 1 : 0} rs=${probe.ready} ns=${probe.network} `,
                 `sw=${probe.serviceWorker} v=${probe.videos} a=${probe.active}`),
-              h('div', null, `ev: ${probe.events ?? '-'}`),
+              h('div', null, `uids=${probe.uids ?? '-'} ev=${probe.events ?? '-'}`),
               h('div', null, `src=…${probe.src}`),
               probe.wire
                 ? h('div', null,
