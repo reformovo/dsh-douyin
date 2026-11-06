@@ -603,9 +603,15 @@ window.__ModuleLoader__.load({
           ranges: video && video.seekable.length
             ? `${video.seekable.start(0).toFixed(1)}-${video.seekable.end(video.seekable.length - 1).toFixed(1)}`
             : 'none',
+          buffered: video && video.buffered.length
+            ? `${video.buffered.start(0).toFixed(1)}-${video.buffered.end(video.buffered.length - 1).toFixed(1)}`
+            : 'none',
           paused: video ? video.paused : null,
           seeking: video ? video.seeking : null,
           ready: video ? video.readyState : null,
+          network: video ? video.networkState : null,
+          src: video && video.currentSrc ? video.currentSrc.slice(-46) : 'none',
+          serviceWorker: navigator.serviceWorker?.controller ? 'yes' : 'no',
           videos: stage ? stage.querySelectorAll('video').length : 0,
           active: stage ? stage.querySelectorAll('.dy-slide[data-active="true"]').length : 0,
         })
@@ -1150,10 +1156,14 @@ window.__ModuleLoader__.load({
             : null,
           probe
             ? h('div', { className: 'dy-probe' },
-              `t=${probe.ct.toFixed(2)}/${Number.isFinite(probe.dur) ? probe.dur.toFixed(2) : probe.dur} `,
-              `tgt=${probe.target === null ? '-' : Number(probe.target).toFixed(2)} `,
-              `seek=${probe.ranges} p=${probe.paused ? 1 : 0} sk=${probe.seeking ? 1 : 0} `,
-              `rs=${probe.ready} v=${probe.videos} a=${probe.active}`)
+              h('div', null,
+                `t=${probe.ct.toFixed(2)}/${Number.isFinite(probe.dur) ? probe.dur.toFixed(2) : probe.dur} `,
+                `tgt=${probe.target === null ? '-' : Number(probe.target).toFixed(2)} `,
+                `seek=${probe.ranges} buf=${probe.buffered}`),
+              h('div', null,
+                `p=${probe.paused ? 1 : 0} sk=${probe.seeking ? 1 : 0} rs=${probe.ready} ns=${probe.network} `,
+                `sw=${probe.serviceWorker} v=${probe.videos} a=${probe.active}`),
+              h('div', null, `src=…${probe.src}`))
             : null,
           item ? h('div', { className: 'dy-time' }, formatTime(item.duration * progress), ' / ', formatTime(item.duration)) : null,
           notice === 'finished'

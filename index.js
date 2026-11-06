@@ -358,6 +358,15 @@ export function apply(ctx, config = {}) {
       const page = await readFeed(cursor)
       return sendJson(response, 200, { ok: true, bound: session.bound, ...page })
     }
+    if (path === '/_page') {
+      // TEMPORARY: same-origin harness page for the media probe.
+      const src = url.searchParams.get('m') ?? ''
+      const css = 'html,body{margin:0;background:#000;height:100%}.dy-stage{position:relative;height:100vh;overflow:hidden;background:#000}.dy-track{position:absolute;inset:0;overflow:hidden}.dy-slide{position:absolute;inset:0;background:#000;transform:translateY(0);transition:transform .34s;will-change:transform}.dy-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}'
+      response.statusCode = 200
+      response.setHeader('content-type', 'text/html; charset=utf-8')
+      response.end(`<!doctype html><meta charset="utf-8"><style>${css}</style><div class="dy-stage"><div class="dy-track"><div class="dy-slide" data-active="true"><video id="v" class="dy-video" src="${src}" muted playsinline loop preload="auto"></video></div><div class="dy-slide" style="transform:translateY(100%)"><video class="dy-video" src="${src}" muted playsinline loop preload="auto"></video></div></div></div>`)
+      return
+    }
     if (path === '/media') return proxyMedia(request, response, url)
     if (path === '/cover') return proxyCover(response, url)
     return sendJson(response, 404, { ok: false, error: 'not found' })
