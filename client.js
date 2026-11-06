@@ -629,7 +629,7 @@ window.__ModuleLoader__.load({
           .then((response) => {
             setProbe((current) => (current ? {
               ...current,
-              http: `${response.status} ar=${response.headers.get('accept-ranges')} cl=${response.headers.get('content-length')} cr=${response.headers.get('content-range')} ct=${response.headers.get('content-type')}`,
+              http: `${response.status} ar=${response.headers.get('accept-ranges')} cl=${response.headers.get('content-length')} cr=${response.headers.get('content-range')} ce=${response.headers.get('content-encoding')} te=${response.headers.get('transfer-encoding')}`,
             } : current))
           })
           .catch((error) => {
@@ -718,10 +718,26 @@ window.__ModuleLoader__.load({
           if (!video) return
           const target = scrubRef.current.target
           const resume = scrubRef.current.resume
+          // Some streams arrive without range support, and then `currentTime` is
+          // clamped back to 0 every time. A media fragment restarts the load at
+          // the target instead, which is the only way to move such a stream.
+          const restartAt = () => {
+            const base = (video.getAttribute('src') ?? '').split('#')[0]
+            if (!base || !Number.isFinite(target)) return false
+            video.src = `${base}#t=${target.toFixed(2)}`
+            video.load()
+            if (resume) video.play().catch(() => {})
+            return true
+          }
           let settled = false
           const finish = () => {
             if (settled) return
             settled = true
+            const seekable = video.seekable.length > 0 && video.seekable.end(video.seekable.length - 1) > 0
+            if (!seekable) {
+              restartAt()
+              return
+            }
             // A pending seek can be dropped by a play() that arrives mid-flight,
             // so re-assert the position once before resuming.
             if (Number.isFinite(target) && Math.abs(video.currentTime - target) > 0.4) {
