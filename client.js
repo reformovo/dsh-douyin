@@ -615,6 +615,7 @@ window.__ModuleLoader__.load({
           serviceWorker: navigator.serviceWorker?.controller ? 'yes' : 'no',
           videos: stage ? stage.querySelectorAll('video').length : 0,
           active: stage ? stage.querySelectorAll('.dy-slide[data-active="true"]').length : 0,
+          same: video ? video.dataset.uid === scrubRef.current.uid : false,
           uids: stage
             ? [...stage.querySelectorAll('video')].map((element) => `${element.dataset.uid ?? '?'}${element.closest('.dy-slide')?.getAttribute('data-active') === 'true' ? '*' : ''}`).join(',')
             : '-',
@@ -644,7 +645,7 @@ window.__ModuleLoader__.load({
       }, [sampleProbe])
 
       const barRef = React.useRef(null)
-      const scrubRef = React.useRef({ dragging: false, resume: false, target: null })
+      const scrubRef = React.useRef({ dragging: false, resume: false, target: null, uid: '?' })
 
       // The bar drives seeking with native pointer events on `window`: a drag
       // that leaves the 16px bar keeps tracking, and no synthetic handler can
@@ -729,6 +730,7 @@ window.__ModuleLoader__.load({
           const video = currentVideo()
           scrubRef.current.dragging = true
           scrubRef.current.target = null
+          scrubRef.current.uid = video?.dataset.uid ?? '?'
           scrubRef.current.resume = Boolean(video && !video.paused)
           if (video) video.pause()
           setScrubbing(true)
@@ -1193,7 +1195,7 @@ window.__ModuleLoader__.load({
               h('div', null,
                 `p=${probe.paused ? 1 : 0} sk=${probe.seeking ? 1 : 0} rs=${probe.ready} ns=${probe.network} `,
                 `sw=${probe.serviceWorker} v=${probe.videos} a=${probe.active}`),
-              h('div', null, `uids=${probe.uids ?? '-'} ev=${probe.events ?? '-'}`),
+              h('div', null, `same=${probe.same ? 'y' : 'n'} uids=${probe.uids ?? '-'} ev=${probe.events ?? '-'}`),
               h('div', null, `src=…${probe.src}`),
               probe.wire
                 ? h('div', null,
