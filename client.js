@@ -1217,7 +1217,8 @@ window.__ModuleLoader__.load({
                 ? h('div', null,
                   `wire: ${probe.wire.status} range=${probe.wire.range} `,
                   `cr=${probe.wire.contentRange} cl=${probe.wire.length}`)
-                : h('div', null, 'wire: -'))
+                : h('div', null, 'wire: -'),
+              h('div', null, `http: ${probe.http ?? '-'}`))
             : null,
           item ? h('div', { className: 'dy-time' }, formatTime(item.duration * progress), ' / ', formatTime(item.duration)) : null,
           notice === 'finished'
