@@ -590,49 +590,75 @@ window.__ModuleLoader__.load({
       }
 
       const barRef = React.useRef(null)
+      const scrubRef = React.useRef({ dragging: false, resume: false })
 
-      /** Seek to the pointer's position on the bar; used for click and drag alike. */
-      const seekTo = (event) => {
+      // The bar drives seeking with native pointer events on `window`: a drag
+      // that leaves the 16px bar keeps tracking, and no synthetic handler can
+      // swallow the move. The video is looked up from the DOM each time, so a
+      // slide swap can never leave this pointing at the wrong element.
+      React.useEffect(() => {
         const bar = barRef.current
-        const video = videoRef.current
-        if (!bar || !video || !Number.isFinite(video.duration) || video.duration <= 0) return
-        const rect = bar.getBoundingClientRect()
-        if (!rect.width) return
-        const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
-        video.currentTime = ratio * video.duration
-        setProgress(ratio)
-      }
-
-      const onSeekDown = (event) => {
-        event.stopPropagation()
-        event.preventDefault()
-        try {
-          event.currentTarget.setPointerCapture(event.pointerId)
-        } catch {
-          // Capture is a nicety, not a requirement.
+        if (!bar) return undefined
+        const currentVideo = () => stageRef.current?.querySelector('.dy-slide[data-active="true"] video') ?? null
+        const ratioOf = (event) => {
+          const rect = bar.getBoundingClientRect()
+          if (!rect.width) return 0
+          return Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width))
         }
-        setScrubbing(true)
-        seekTo(event)
-      }
-
-      const onSeekMove = (event) => {
-        if (!scrubbing) return
-        event.stopPropagation()
-        seekTo(event)
-      }
-
-      const onSeekEnd = (event) => {
-        if (!scrubbing) return
-        try {
-          event.currentTarget.releasePointerCapture(event.pointerId)
-        } catch {
-          // Already released.
+        const apply = (ratio) => {
+          const video = currentVideo()
+          if (!video) return
+          const duration = Number.isFinite(video.duration) && video.duration > 0
+            ? video.duration
+            : (video.seekable.length ? video.seekable.end(video.seekable.length - 1) : 0)
+          if (!duration) return
+          video.currentTime = ratio * duration
+          setProgress(ratio)
         }
-        setScrubbing(false)
-      }
+        const onMove = (event) => {
+          if (!scrubRef.current.dragging) return
+          event.preventDefault()
+          apply(ratioOf(event))
+        }
+        const onUp = () => {
+          if (!scrubRef.current.dragging) return
+          scrubRef.current.dragging = false
+          setScrubbing(false)
+          window.removeEventListener('pointermove', onMove)
+          window.removeEventListener('pointerup', onUp)
+          window.removeEventListener('pointercancel', onUp)
+          const video = currentVideo()
+          if (video && scrubRef.current.resume) video.play().catch(() => {})
+        }
+        const onDown = (event) => {
+          if (event.button !== 0) return
+          event.preventDefault()
+          event.stopPropagation()
+          const video = currentVideo()
+          scrubRef.current.dragging = true
+          scrubRef.current.resume = Boolean(video && !video.paused)
+          if (video) video.pause()
+          setScrubbing(true)
+          apply(ratioOf(event))
+          window.addEventListener('pointermove', onMove, { passive: false })
+          window.addEventListener('pointerup', onUp)
+          window.addEventListener('pointercancel', onUp)
+        }
+        const stopClick = (event) => event.stopPropagation()
+        bar.addEventListener('pointerdown', onDown)
+        bar.addEventListener('click', stopClick)
+        return () => {
+          bar.removeEventListener('pointerdown', onDown)
+          bar.removeEventListener('click', stopClick)
+          window.removeEventListener('pointermove', onMove)
+          window.removeEventListener('pointerup', onUp)
+          window.removeEventListener('pointercancel', onUp)
+        }
+      }, [item?.id])
 
       const onTimeUpdate = (event) => {
         const video = event.currentTarget
+        if (scrubRef.current.dragging) return
         if (video !== videoRef.current || !Number.isFinite(video.duration) || video.duration <= 0) return
         setProgress(Math.min(1, video.currentTime / video.duration))
       }
@@ -830,6 +856,7 @@ window.__ModuleLoader__.load({
                   setNotice((current) => (current === 'finished' ? null : current))
                 },
                 onPause: (event) => {
+                  if (scrubRef.current.dragging) return
                   if (event.currentTarget !== videoRef.current) return
                   setPlaying(false)
                 },
@@ -1045,11 +1072,6 @@ window.__ModuleLoader__.load({
                 'aria-valuemin': 0,
                 'aria-valuemax': 100,
                 'aria-valuenow': Math.round(progress * 100),
-                onPointerDown: onSeekDown,
-                onPointerMove: onSeekMove,
-                onPointerUp: onSeekEnd,
-                onPointerCancel: onSeekEnd,
-                onClick: (event) => event.stopPropagation(),
               },
               h('i', { style: { width: `${progress * 100}%` } }),
               h('b', { style: { left: `${progress * 100}%` } }),
