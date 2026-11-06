@@ -321,7 +321,6 @@ window.__ModuleLoader__.load({
 .dy-sheet-actions button[disabled]{opacity:.5;cursor:default;}
 .dy-sheet-actions button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}
 .dy-error-text{color:#ff6b6b;font-size:12px;line-height:1.45;}
-.dy-probe{position:absolute;left:8px;top:42px;z-index:9;max-width:calc(100% - 16px);padding:4px 6px;border-radius:6px;background:rgba(0,0,0,.72);color:#8ef;font:10px/1.4 ui-monospace,Menlo,monospace;pointer-events:none;word-break:break-all;}
 .dy-login-wait{display:flex;align-items:center;gap:10px;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary);}
 .dy-login-wait .dy-spin{width:16px;height:16px;border-radius:999px;border:2px solid var(--dsw-alias-border-l1);border-top-color:var(--dsw-alias-label-primary);animation:dy-spin .8s linear infinite;flex:none;}
 .dy-who{display:flex;align-items:center;gap:8px;font-size:13px;}
@@ -366,8 +365,6 @@ window.__ModuleLoader__.load({
       const [progress, setProgress] = React.useState(0)
       const [playing, setPlaying] = React.useState(false)
       const [scrubbing, setScrubbing] = React.useState(false)
-      const [probe, setProbe] = React.useState(null)
-      const probeTimerRef = React.useRef(null)
       const [notice, setNotice] = React.useState(null)
       const [brokenIds, setBrokenIds] = React.useState(() => new Set())
       const [account, setAccount] = React.useState({ bound: false, profile: null })
@@ -491,6 +488,13 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         const video = findActiveVideo()
         videoRef.current = video
+        offsetRef.current = 0
+        durationRef.current = item?.duration ?? 0
+        const clean = video?.dataset.src
+        if (video && clean && video.getAttribute('src') && video.getAttribute('src') !== clean) {
+          video.src = clean
+          video.load()
+        }
         for (const element of stageRef.current?.querySelectorAll('video') ?? []) {
           if (element !== video) element.pause()
         }
@@ -592,75 +596,12 @@ window.__ModuleLoader__.load({
         togglePlay()
       }
 
-      /** TEMPORARY: sample the media element so the drag failure can be seen on screen. */
-      const sampleProbe = React.useCallback(() => {
-        const stage = stageRef.current
-        const video = stage?.querySelector('.dy-slide[data-active="true"] video') ?? null
-        setProbe((previous) => ({
-          ...(previous ?? {}),
-          target: scrubRef.current.target,
-          ct: video ? video.currentTime : -1,
-          dur: video ? video.duration : -1,
-          ranges: video && video.seekable.length
-            ? `${video.seekable.start(0).toFixed(1)}-${video.seekable.end(video.seekable.length - 1).toFixed(1)}`
-            : 'none',
-          buffered: video && video.buffered.length
-            ? `${video.buffered.start(0).toFixed(1)}-${video.buffered.end(video.buffered.length - 1).toFixed(1)}`
-            : 'none',
-          paused: video ? video.paused : null,
-          seeking: video ? video.seeking : null,
-          ready: video ? video.readyState : null,
-          network: video ? video.networkState : null,
-          src: video && video.currentSrc ? video.currentSrc.slice(-46) : 'none',
-          serviceWorker: navigator.serviceWorker?.controller ? 'yes' : 'no',
-          videos: stage ? stage.querySelectorAll('video').length : 0,
-          active: stage ? stage.querySelectorAll('.dy-slide[data-active="true"]').length : 0,
-          same: video ? video.dataset.uid === scrubRef.current.uid : false,
-          uids: stage
-            ? [...stage.querySelectorAll('video')].map((element) => `${element.dataset.uid ?? '?'}${element.closest('.dy-slide')?.getAttribute('data-active') === 'true' ? '*' : ''}`).join(',')
-            : '-',
-        }))
-      }, [])
-
-      const probeHttp = React.useCallback((src) => {
-        if (!src) return
-        fetch(src, { headers: { Range: 'bytes=0-1' }, cache: 'no-store' })
-          .then((response) => response.arrayBuffer().then(() => response))
-          .then((response) => {
-            setProbe((current) => (current ? {
-              ...current,
-              http: `${response.status} ar=${response.headers.get('accept-ranges')} cl=${response.headers.get('content-length')} cr=${response.headers.get('content-range')} ce=${response.headers.get('content-encoding')} te=${response.headers.get('transfer-encoding')}`,
-            } : current))
-          })
-          .catch((error) => {
-            setProbe((current) => (current ? { ...current, http: `err ${error?.message ?? error}` } : current))
-          })
-      }, [])
-
-      const sampleWire = React.useCallback(() => {
-        fetch(`${API}/_wire`)
-          .then((response) => response.json())
-          .then((body) => {
-            const last = body?.wire?.[body.wire.length - 1]
-            if (last) setProbe((current) => (current ? { ...current, wire: last } : current))
-          })
-          .catch(() => {})
-      }, [])
-
-      const startProbe = React.useCallback(() => {
-        sampleProbe()
-        sampleWire()
-        clearInterval(probeTimerRef.current)
-        probeTimerRef.current = setInterval(sampleProbe, 300)
-        setTimeout(() => {
-          clearInterval(probeTimerRef.current)
-          probeTimerRef.current = null
-          sampleProbe()
-        }, 8000)
-      }, [sampleProbe])
-
       const barRef = React.useRef(null)
-      const scrubRef = React.useRef({ dragging: false, resume: false, target: null, uid: '?' })
+      const scrubRef = React.useRef({ dragging: false, resume: false, target: null })
+      /** Seconds of the item already skipped by an ffmpeg re-cut, added to currentTime. */
+      const offsetRef = React.useRef(0)
+      /** The item's full length, which is what the bar is measured against. */
+      const durationRef = React.useRef(0)
 
       // The bar drives seeking with native pointer events on `window`: a drag
       // that leaves the 16px bar keeps tracking, and no synthetic handler can
@@ -678,9 +619,7 @@ window.__ModuleLoader__.load({
         const apply = (ratio) => {
           const video = currentVideo()
           if (!video) return
-          const duration = Number.isFinite(video.duration) && video.duration > 0
-            ? video.duration
-            : (video.seekable.length ? video.seekable.end(video.seekable.length - 1) : 0)
+          const duration = durationRef.current > 0 ? durationRef.current : video.duration
           if (!duration) return
           // Never land exactly on the end: with `loop` that wraps straight to 0.
           const target = Math.min(ratio * duration, Math.max(0, duration - 0.25))
@@ -700,21 +639,7 @@ window.__ModuleLoader__.load({
           window.removeEventListener('pointermove', onMove)
           window.removeEventListener('pointerup', onUp)
           window.removeEventListener('pointercancel', onUp)
-          startProbe()
           const video = currentVideo()
-          if (video) {
-            probeHttp(video.currentSrc)
-            const trail = []
-            const names = ['loadstart', 'emptied', 'pause', 'seeking', 'seeked', 'play', 'loadedmetadata']
-            const record = (event) => {
-              trail.push(event.type)
-              setProbe((current) => (current ? { ...current, events: trail.slice(-6).join(',') } : current))
-            }
-            for (const name of names) video.addEventListener(name, record)
-            setTimeout(() => {
-              for (const name of names) video.removeEventListener(name, record)
-            }, 4000)
-          }
           if (!video) return
           const target = scrubRef.current.target
           const resume = scrubRef.current.resume
@@ -722,9 +647,11 @@ window.__ModuleLoader__.load({
           // clamped back to 0 every time. A media fragment restarts the load at
           // the target instead, which is the only way to move such a stream.
           const restartAt = () => {
-            const base = (video.getAttribute('src') ?? '').split('#')[0]
-            if (!base || !Number.isFinite(target)) return false
-            video.src = `${base}#t=${target.toFixed(2)}`
+            const clean = video.dataset.src || (video.getAttribute('src') ?? '').split('?')[0]
+            if (!clean || !Number.isFinite(target)) return false
+            offsetRef.current = target
+            setProgress(target / (durationRef.current || target || 1))
+            video.src = `${clean}${clean.includes('?') ? '&' : '?'}ss=${target.toFixed(2)}`
             video.load()
             if (resume) video.play().catch(() => {})
             return true
@@ -762,7 +689,6 @@ window.__ModuleLoader__.load({
           const video = currentVideo()
           scrubRef.current.dragging = true
           scrubRef.current.target = null
-          scrubRef.current.uid = video?.dataset.uid ?? '?'
           scrubRef.current.resume = Boolean(video && !video.paused)
           if (video) video.pause()
           setScrubbing(true)
@@ -786,7 +712,13 @@ window.__ModuleLoader__.load({
       const onTimeUpdate = (event) => {
         const video = event.currentTarget
         if (scrubRef.current.dragging) return
-        if (video !== videoRef.current || !Number.isFinite(video.duration) || video.duration <= 0) return
+        if (video !== videoRef.current || !Number.isFinite(video.currentTime)) return
+        const total = durationRef.current
+        if (total > 0) {
+          setProgress(Math.min(1, (offsetRef.current + video.currentTime) / total))
+          return
+        }
+        if (!Number.isFinite(video.duration) || video.duration <= 0) return
         const target = scrubRef.current.target
         if (Number.isFinite(target)) {
           if (Math.abs(video.currentTime - target) > 1.5 && target > 1) {
@@ -979,11 +911,9 @@ window.__ModuleLoader__.load({
                 'aria-hidden': active ? undefined : 'true',
               },
               h('video', {
-                ref: (element) => {
-                  if (element && !element.dataset.uid) element.dataset.uid = Math.random().toString(36).slice(2, 6)
-                },
                 className: 'dy-video',
                 src: entry.play,
+                'data-src': entry.play,
                 poster: entry.cover ?? undefined,
                 playsInline: true,
                 loop: true,
@@ -1217,24 +1147,6 @@ window.__ModuleLoader__.load({
               h('i', { style: { width: `${progress * 100}%` } }),
               h('b', { style: { left: `${progress * 100}%` } }),
             )
-            : null,
-          probe
-            ? h('div', { className: 'dy-probe' },
-              h('div', null,
-                `t=${probe.ct.toFixed(2)}/${Number.isFinite(probe.dur) ? probe.dur.toFixed(2) : probe.dur} `,
-                `tgt=${probe.target === null ? '-' : Number(probe.target).toFixed(2)} `,
-                `seek=${probe.ranges} buf=${probe.buffered}`),
-              h('div', null,
-                `p=${probe.paused ? 1 : 0} sk=${probe.seeking ? 1 : 0} rs=${probe.ready} ns=${probe.network} `,
-                `sw=${probe.serviceWorker} v=${probe.videos} a=${probe.active}`),
-              h('div', null, `same=${probe.same ? 'y' : 'n'} uids=${probe.uids ?? '-'} ev=${probe.events ?? '-'}`),
-              h('div', null, `src=…${probe.src}`),
-              probe.wire
-                ? h('div', null,
-                  `wire: ${probe.wire.status} range=${probe.wire.range} `,
-                  `cr=${probe.wire.contentRange} cl=${probe.wire.length}`)
-                : h('div', null, 'wire: -'),
-              h('div', null, `http: ${probe.http ?? '-'}`))
             : null,
           item ? h('div', { className: 'dy-time' }, formatTime(item.duration * progress), ' / ', formatTime(item.duration)) : null,
           notice === 'finished'

@@ -10,6 +10,7 @@
  * The Client half draws the vertical feed in the right Sidebar.
  */
 import { Readable } from 'node:stream'
+import { spawn } from 'node:child_process'
 import { BrowserLogin } from './lib/browser-login.js'
 import {
   DouyinSession,
@@ -76,20 +77,23 @@ export function apply(ctx, config = {}) {
   const session = new DouyinSession({ logger, count: settings.feedCount })
   const credentials = ctx.get('credentials')
   const login = new BrowserLogin({ logger })
+  /** Regenerated every time the plugin loads, so cached media URLs never repeat. */
+  const sessionNonce = Date.now().toString(36)
 
   /** The account the jar belongs to, as the Host last saw it. */
   const auth = { profile: null, persisted: Boolean(credentials) }
 
   /** Every aweme id already handed to the page, so one stream never repeats. */
   const seen = new Set()
-  /** TEMPORARY: the last media requests as the browser made them. */
-  const wire = []
   /** cover url -> { type, bytes } */
   const covers = new Map()
 
   function proxied() {
     return {
-      media: (url) => (url ? `${ROUTE_PREFIX}/media?u=${encodeURIComponent(url)}` : null),
+      // The nonce keeps this run's media URLs distinct from anything Chrome may
+      // have cached for a previous run; a stale partial response is enough to
+      // make the element report itself as unseekable.
+      media: (url) => (url ? `${ROUTE_PREFIX}/media?u=${encodeURIComponent(url)}&n=${sessionNonce}` : null),
       cover: (url) => (url ? `${ROUTE_PREFIX}/cover?u=${encodeURIComponent(url)}` : null),
     }
   }
@@ -150,48 +154,149 @@ export function apply(ctx, config = {}) {
     return { items: [], cursor: current, nextCursor: current + 1, exhausted: true }
   }
 
+  /**
+   * Total size per media URL. One `Range: bytes=0-0` probe is enough, and the
+   * answer is cached for the session so every later request can compute exact
+   * range headers without touching the disk.
+   */
+  const mediaSizes = new Map()
+
+  async function mediaMeta(target) {
+    const cached = mediaSizes.get(target)
+    if (cached) return cached
+    const probe = await fetch(target, {
+      headers: { 'User-Agent': CDN_USER_AGENT, Referer: 'https://www.douyin.com/', Range: 'bytes=0-0' },
+    })
+    if (!probe.ok && probe.status !== 206) throw new Error(`media probe failed with HTTP ${probe.status}`)
+    const contentRange = probe.headers.get('content-range') ?? ''
+    const match = /^bytes\s+\d+-\d+\/(\d+)$/i.exec(contentRange)
+    const type = probe.headers.get('content-type') ?? 'video/mp4'
+    await probe.body?.cancel().catch(() => {})
+    const size = match ? Number(match[1]) : Number(probe.headers.get('content-length') ?? 0)
+    if (!Number.isFinite(size) || size <= 0) throw new Error('media size is unknown')
+    const meta = { size, type }
+    mediaSizes.set(target, meta)
+    if (mediaSizes.size > 200) mediaSizes.delete(mediaSizes.keys().next().value)
+    return meta
+  }
+
+  /**
+   * Proxy one media range. The CDN is the only byte source — nothing is written
+   * to disk — but the headers are computed here from the known total, so the
+   * player always receives a complete, self-consistent resource and keeps
+   * seeking enabled.
+   */
+  /**
+   * Stream the video from `seconds` onward by re-cutting it with ffmpeg. The
+   * client uses this when the embedded browser refuses native seeking, so the
+   * element always starts a fresh stream at 0 that happens to begin where the
+   * user dropped the thumb.
+   */
+  async function streamFromTime(target, seconds, request, response) {
+    const child = spawn('ffmpeg', [
+      '-v', 'error',
+      '-headers', 'Referer: https://www.douyin.com/\r\n',
+      '-ss', String(seconds),
+      '-i', target,
+      '-c', 'copy',
+      '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+      '-f', 'mp4',
+      'pipe:1',
+    ], { stdio: ['ignore', 'pipe', 'ignore'] })
+    response.statusCode = 200
+    response.setHeader('content-type', 'video/mp4')
+    response.setHeader('cache-control', 'no-store')
+    const stop = () => {
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // Already gone.
+      }
+    }
+    request.on('close', stop)
+    child.on('error', (error) => {
+      logger.warn?.(`[douyin] ffmpeg unavailable: ${error?.message ?? error}`)
+      if (!response.headersSent) response.statusCode = 502
+      response.end()
+    })
+    child.on('exit', () => {
+      if (!response.writableEnded) response.end()
+    })
+    child.stdout.pipe(response)
+  }
+
   async function proxyMedia(request, response, url) {
     const target = url.searchParams.get('u')
     if (!target || !isAllowedMedia(target)) return sendJson(response, 400, { ok: false, error: 'unsupported media url' })
-    const headers = {
-      'User-Agent': CDN_USER_AGENT,
-      Referer: 'https://www.douyin.com/',
-      Accept: '*/*',
-      ...(request.headers.range ? { Range: request.headers.range } : {}),
+    const from = Number(url.searchParams.get('ss') ?? '0')
+    if (Number.isFinite(from) && from > 0.05) {
+      return streamFromTime(target, from, request, response)
     }
-    const upstream = await fetch(target, { headers })
-    wire.push({
-      at: Date.now(),
-      range: request.headers.range ?? '-',
-      status: upstream.status,
-      contentRange: upstream.headers.get('content-range') ?? '-',
-      length: upstream.headers.get('content-length') ?? '-',
+    const meta = await mediaMeta(target)
+    const requested = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? '')
+    let start = 0
+    let end = meta.size - 1
+    let status = 200
+    if (requested) {
+      if (requested[1]) start = Number(requested[1])
+      if (requested[2]) end = Math.min(Number(requested[2]), meta.size - 1)
+      if (!requested[1] && requested[2]) {
+        start = Math.max(0, meta.size - Number(requested[2]))
+        end = meta.size - 1
+      }
+      if (start > end || start >= meta.size) {
+        response.statusCode = 416
+        response.setHeader('content-range', `bytes */${meta.size}`)
+        response.end()
+        return
+      }
+      status = 206
+    }
+    response.statusCode = status
+    response.setHeader('content-type', meta.type)
+    response.setHeader('accept-ranges', 'bytes')
+    response.setHeader('cache-control', 'no-store')
+    if (status === 206) response.setHeader('content-range', `bytes ${start}-${end}/${meta.size}`)
+    response.setHeader('content-length', String(end - start + 1))
+    if (request.method === 'HEAD') {
+      response.end()
+      return
+    }
+
+    const upstream = await fetch(target, {
+      headers: {
+        'User-Agent': CDN_USER_AGENT,
+        Referer: 'https://www.douyin.com/',
+        Range: `bytes=${start}-${end}`,
+      },
     })
-    if (wire.length > 8) wire.shift()
     if (!upstream.ok && upstream.status !== 206) {
-      logger.warn?.(`[douyin] media upstream ${upstream.status} range=${request.headers.range ?? '-'} host=${new URL(target).host}`)
       response.statusCode = upstream.status === 403 ? 410 : 502
       response.end()
       return
     }
-    response.statusCode = upstream.status
-    for (const header of ['content-type', 'content-length', 'content-range']) {
-      const value = upstream.headers.get(header)
-      if (value) response.setHeader(header, value)
-    }
-    // Media must never enter the HTTP cache: a cached partial response makes
-    // Chrome treat the stream as non-seekable, which pins currentTime to 0.
-    response.setHeader('accept-ranges', 'bytes')
-    response.setHeader('cache-control', 'no-store')
     if (!upstream.body) {
       response.end()
       return
     }
-    const stream = Readable.fromWeb(upstream.body)
-    const abort = () => stream.destroy()
-    request.on('close', abort)
-    stream.on('error', () => response.destroy())
-    stream.pipe(response)
+    const limit = end - start + 1
+    let written = 0
+    let closed = false
+    request.on('close', () => {
+      closed = true
+      upstream.body?.cancel().catch(() => {})
+    })
+    try {
+      for await (const chunk of Readable.fromWeb(upstream.body)) {
+        if (closed || written >= limit) break
+        const slice = chunk.length > limit - written ? chunk.subarray(0, limit - written) : chunk
+        written += slice.length
+        if (!response.write(slice)) await new Promise((resolve) => response.once('drain', resolve))
+      }
+    } catch (error) {
+      logger.warn?.(`[douyin] media stream failed: ${error?.message ?? error}`)
+    }
+    if (!response.writableEnded) response.end()
   }
 
   async function proxyCover(response, url) {
@@ -367,18 +472,6 @@ export function apply(ctx, config = {}) {
       const cursor = Math.max(1, Number(url.searchParams.get('cursor') ?? '1') || 1)
       const page = await readFeed(cursor)
       return sendJson(response, 200, { ok: true, bound: session.bound, ...page })
-    }
-    if (path === '/_wire') {
-      return sendJson(response, 200, { ok: true, wire })
-    }
-    if (path === '/_page') {
-      // TEMPORARY: same-origin harness page for the media probe.
-      const src = url.searchParams.get('m') ?? ''
-      const css = 'html,body{margin:0;background:#000;height:100%}.dy-stage{position:relative;height:100vh;overflow:hidden;background:#000}.dy-track{position:absolute;inset:0;overflow:hidden}.dy-slide{position:absolute;inset:0;background:#000;transform:translateY(0);transition:transform .34s;will-change:transform}.dy-video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}'
-      response.statusCode = 200
-      response.setHeader('content-type', 'text/html; charset=utf-8')
-      response.end(`<!doctype html><meta charset="utf-8"><style>${css}</style><div class="dy-stage"><div class="dy-track"><div class="dy-slide" data-active="true"><video id="v" class="dy-video" src="${src}" muted playsinline loop preload="auto"></video></div><div class="dy-slide" style="transform:translateY(100%)"><video class="dy-video" src="${src}" muted playsinline loop preload="auto"></video></div></div></div>`)
-      return
     }
     if (path === '/media') return proxyMedia(request, response, url)
     if (path === '/cover') return proxyCover(response, url)
