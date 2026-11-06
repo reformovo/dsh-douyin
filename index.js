@@ -165,11 +165,14 @@ export function apply(ctx, config = {}) {
       return
     }
     response.statusCode = upstream.status
-    for (const header of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']) {
+    for (const header of ['content-type', 'content-length', 'content-range']) {
       const value = upstream.headers.get(header)
       if (value) response.setHeader(header, value)
     }
-    response.setHeader('cache-control', 'private, max-age=3600')
+    // Media must never enter the HTTP cache: a cached partial response makes
+    // Chrome treat the stream as non-seekable, which pins currentTime to 0.
+    response.setHeader('accept-ranges', 'bytes')
+    response.setHeader('cache-control', 'no-store')
     if (!upstream.body) {
       response.end()
       return
